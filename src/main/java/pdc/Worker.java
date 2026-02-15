@@ -19,6 +19,7 @@ public class Worker {
     private final ExecutorService rpcPool = Executors.newFixedThreadPool(
             Math.max(2, Runtime.getRuntime().availableProcessors()));
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private Thread readerThread;
 
     private volatile Socket socket;
     private volatile DataInputStream in;
@@ -41,6 +42,7 @@ public class Worker {
             send("CONNECT", workerId);
             send("REGISTER_WORKER", workerId);
             send("REGISTER_CAPABILITIES", "MATRIX_MULTIPLY,BLOCK_TRANSPOSE");
+            startHeartbeat();
             execute();
         } catch (Exception e) {
             running.set(false);
@@ -60,21 +62,25 @@ public class Worker {
         if (!running.get()) {
             return;
         }
-        rpcPool.submit(() -> {
-            while (running.get()) {
-                try {
+        // Use a dedicated reader thread so the rpcPool isn't consumed by IO
+        readerThread = new Thread(() -> {
+            try {
+                while (running.get()) {
                     Message incoming = Message.readFramed(in);
                     if (incoming == null) {
                         break;
                     }
                     onMessage(incoming);
-                } catch (Exception e) {
-                    break;
                 }
+            } catch (Exception e) {
+                // reader exiting
+            } finally {
+                running.set(false);
+                closeQuietly();
             }
-            running.set(false);
-            closeQuietly();
-        });
+        }, "worker-reader-" + workerId);
+        readerThread.setDaemon(true);
+        readerThread.start();
     }
 
     private void onMessage(Message msg) throws IOException {
@@ -87,6 +93,31 @@ public class Worker {
         }
     }
 
+    private void startHeartbeat() {
+        Thread hb = new Thread(() -> {
+            try {
+                while (running.get()) {
+                    try {
+                        Thread.sleep(2000);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                    try {
+                        send("HEARTBEAT", "PING");
+                    } catch (IOException ignored) {
+                        // if we fail to send heartbeat, let reader detect socket failure
+                        break;
+                    }
+                }
+            } finally {
+                // nothing
+            }
+        }, "worker-heartbeat-" + workerId);
+        hb.setDaemon(true);
+        hb.start();
+    }
+
     private void processTask(String payload) {
         String[] parts = payload == null ? new String[0] : payload.split(";", 3);
         String taskId = parts.length > 0 ? parts[0] : "unknown";
@@ -94,8 +125,6 @@ public class Worker {
         String taskBody = parts.length > 2 ? parts[2] : "";
 
         try {
-            // Simulate realistic compute latency for parallel timing checks.
-            Thread.sleep(500);
             String result = runOperation(taskType, taskBody);
             send("TASK_COMPLETE", taskId + ";" + result);
         } catch (Exception e) {
@@ -117,12 +146,17 @@ public class Worker {
         return encodeMatrix(product);
     }
 
-    private synchronized void send(String messageType, String payload) throws IOException {
+    private void send(String messageType, String payload) throws IOException {
         Message msg = new Message();
         msg.studentId = workerId.isEmpty() ? studentId : workerId;
         msg.messageType = messageType;
         msg.payload = payload == null ? "" : payload;
-        Message.writeFramed(out, msg);
+        if (out == null) {
+            throw new IOException("output stream closed");
+        }
+        synchronized (out) {
+            Message.writeFramed(out, msg);
+        }
     }
 
     private int[][][] parsePair(String payload) {

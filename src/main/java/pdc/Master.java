@@ -17,6 +17,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * The Master acts as the Coordinator in a distributed cluster.
@@ -38,6 +39,7 @@ public class Master {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final Map<String, WorkerConnection> workers = new ConcurrentHashMap<>();
     private final Map<String, TaskAssignment> inflightTasks = new ConcurrentHashMap<>();
+    private final AtomicInteger roundRobin = new AtomicInteger(0);
 
     private volatile ServerSocket serverSocket;
 
@@ -335,7 +337,7 @@ public class Master {
 
     private WorkerConnection selectWorker() {
         long now = System.currentTimeMillis();
-        WorkerConnection best = null;
+        List<WorkerConnection> avail = new ArrayList<>();
         for (WorkerConnection worker : workers.values()) {
             if (!worker.alive) {
                 continue;
@@ -343,10 +345,13 @@ public class Master {
             if (now - worker.lastHeartbeatAt > WORKER_TIMEOUT_MS) {
                 continue;
             }
-            best = worker;
-            break;
+            avail.add(worker);
         }
-        return best;
+        if (avail.isEmpty()) {
+            return null;
+        }
+        int idx = Math.abs(roundRobin.getAndIncrement()) % avail.size();
+        return avail.get(idx);
     }
 
     private void recoverAndNotifyClient(String taskId, String reason, DataOutputStream clientOut) throws IOException {
