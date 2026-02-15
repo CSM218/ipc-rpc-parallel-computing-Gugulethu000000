@@ -183,15 +183,19 @@ public class Worker {
     }
 
     private int[][] multiply(int[][] a, int[][] b) {
+        // Cache-friendly multiplication: transpose B and dot rows
         int rows = a.length;
-        int cols = b[0].length;
         int n = b.length;
+        int cols = b[0].length;
         int[][] result = new int[rows][cols];
+        int[][] bt = transpose(b);
         for (int i = 0; i < rows; i++) {
+            int[] ai = a[i];
             for (int j = 0; j < cols; j++) {
+                int[] btj = bt[j];
                 int sum = 0;
                 for (int k = 0; k < n; k++) {
-                    sum += a[i][k] * b[k][j];
+                    sum += ai[k] * btj[k];
                 }
                 result[i][j] = sum;
             }
@@ -200,10 +204,13 @@ public class Worker {
     }
 
     private int[][] transpose(int[][] m) {
-        int[][] t = new int[m[0].length][m.length];
-        for (int i = 0; i < m.length; i++) {
-            for (int j = 0; j < m[0].length; j++) {
-                t[j][i] = m[i][j];
+        int rows = m.length;
+        int cols = m[0].length;
+        int[][] t = new int[cols][rows];
+        for (int i = 0; i < rows; i++) {
+            int[] mi = m[i];
+            for (int j = 0; j < cols; j++) {
+                t[j][i] = mi[j];
             }
         }
         return t;
